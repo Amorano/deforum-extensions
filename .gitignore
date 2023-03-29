@@ -10,3 +10,6 @@ outputs
 cc-outputs.log
 *.safetensors
 scripts/deforum_helpers/navigation.py
+*.code-workspace
+.env
+.vscode
