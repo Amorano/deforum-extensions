@@ -3,55 +3,48 @@
 from mido import MidiFile
 import dearpygui.dearpygui as dpg
 
-def remove_pair_between(pair):
+def remove_pair_between(pair, idx: int=1):
     """Remove duplicate tuples between their start and end points (if more than 2) if index 0 value same."""
     ret = [pair[0]]
-    last_val = pair[0][0]
+    last_val = pair[0][idx]
     last_idx = -1
     for i, tup in enumerate(pair[1:-1]):
-        # add to new list if value has changed
-        if tup[0] == last_val:
+        if tup[idx] == last_val:
             continue
-        # verify we are within a value range
-        if i-1 > last_idx:
+        if i > last_idx:
             ret.append(pair[i])
         ret.append(tup)
-        last_val = tup[0]
+        last_val = tup[idx]
         last_idx = i
-    ret.append(pair[-1])
+    if (last := pair[-1]) != ret[-1]:
+        ret.append(last)
     return ret
 
 class MidiTrackCC:
-    def __init__(self, eventdata):
-        self.__event = eventdata.copy()
+    def __init__(self, name, eventdata):
+        self.__name = name
+        self.__event = {}
+        self.__runtime = 0.
+        for e, data in eventdata.items():
+            ret = [data[0]]
+            for delta, val in data[1:]:
+                if delta > 0:
+                    self.__runtime += delta
+                    ret.append((self.__runtime, val / 127.))
 
-    def curve(self, control: int) -> list[tuple[float, float]]:
-        """Map the control values over time.
+            ret = remove_pair_between(ret, 1)
+            if len(ret) > 1:
+                self.__event[e] = [(t / self.__runtime, v) for t, v in ret]
 
-        Args:
-        ----
-            track: str or int, the name or index of the track to map the control values for
-            control: int, the control number to map the values for
+    def __str__(self):
+        return self.__name
 
-        Returns
-        -------
-            list of tuples containing the time and value for each control event
-        """
-        if (data := self.__event.get(control, None)) is None:
-            return []
+    def __iter__(self):
+        for idx, curve in self.__event.items():
+            yield idx, curve
 
-        # only return the control changes at the times they change -- not every event change
-        data = remove_pair_between(data)
-        # re-normalize
-        ret = []
-        for d in data:
-            v = float(d[0]) / 127.
-            d = (v, d[1])
-            ret.append(d)
-        return ret
-
-    def value(self, control: int, t: float=0.) -> int:
-        return -1
+    def controls(self):
+        return self.__event.keys()
 
 class MidiCC:
     def __init__(self, filename):
@@ -69,54 +62,52 @@ class MidiCC:
         for track in mid.tracks:
             name = track.name
             data = {}
-            runtime = {}
+            # runtime = {}
             for msg in track:
                 # Add control event to the list for the current track name
                 if msg.type == 'control_change':
                     idx = msg.control
-                    runtime[idx] = runtime.get(idx, 0.) + msg.time
+                    # runtime[idx] = runtime.get(idx, 0.) + msg.time
                     data[idx] = data.get(idx, [])
-                    e = (msg.value, runtime[idx])
+                    e = (msg.time, msg.value)
                     data[idx].append(e)
 
                 # track is complete, add the data
                 elif msg.type == 'end_of_track' and len(data) > 0:
                     # scan all the control channels and only take messages that matter to us
-                    self.__track[name] = MidiTrackCC(data)
+                    self.__track[name] = MidiTrackCC(track.name, data)
 
     def __iter__(self):
-        for x in self.__track:
+        for x in self.__track.values():
             yield x
-
-    def track(self, track) -> MidiTrackCC:
-        if (ret := self.__track.get(track, None)) is None:
-            raise ValueError(f"no track {track}")
-        return ret
 
 def window():
     fname = "C:\\dev\\auto1111\\extensions\\deforum-for-automatic1111-webui\\test_control2.mid"
     midi = MidiCC(fname)
-    track = midi.track('808 Kick')
-    atay, atax = zip(*track.curve(7))
 
     dpg.create_context()
     with dpg.window(label="Curve", tag="win"):
         # create plot
-        with dpg.plot(label="Value Curve", height=800, width=800):
-            # optionally create legend
-            dpg.add_plot_legend()
+        for track in midi:
+            for ctrl, data in track:
+                if len(data) < 2:
+                    continue
+                atax, atay = zip(*data)
+                with dpg.plot(label=f"{track}_{ctrl}", height=300, width=300):
+                    # optionally create legend
+                    dpg.add_plot_legend()
 
-            # REQUIRED: create x and y axes
-            dpg.add_plot_axis(dpg.mvXAxis, label="time")
-            dpg.add_plot_axis(dpg.mvYAxis, label="value", tag="y_axis")
+                    # REQUIRED: create x and y axes
+                    dpg.add_plot_axis(dpg.mvXAxis, label="time")
+                    what = dpg.add_plot_axis(dpg.mvYAxis, label="value")
+                    dpg.add_line_series(atax, atay, parent=what)
 
-            # series belong to a y axis
-            dpg.add_line_series(atax, atay, parent="y_axis")
+                # dpg.fit_axis_data(tag)
 
-    dpg.fit_axis_data("y_axis")
+    dpg.create_viewport(title='Custom Title', width=600, height=600)
     dpg.setup_dearpygui()
-    dpg.create_viewport(title='Custom Title', width=800, height=800)
     dpg.show_viewport()
+    dpg.set_primary_window("win", True)
     dpg.start_dearpygui()
     dpg.destroy_context()
 
